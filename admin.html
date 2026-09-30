@@ -5488,7 +5488,6 @@
                 if (typeof loadSuppliersList === "function") await loadSuppliersList();
                 return;
               }
-            }
             } else {
               const errData = await srvRes.json().catch(() => ({}));
               throw new Error(errData.error || "Failed to import suppliers through server API.");
