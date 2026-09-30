@@ -6,6 +6,9 @@ coverage/
 *.log
 .env*
 !.env.example
+.dev.vars
+.dev.vars.*
+.wrangler/
 __pycache__/
 *.pyc
 reports/*.pdf

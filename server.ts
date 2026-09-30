@@ -1164,6 +1164,12 @@ app.get("/api/health", (req: Request, res: Response) => {
 
 app.get("/api/status", async (req: Request, res: Response) => {
   const { url, key } = getSupabaseConfig();
+  if (!url || !key) {
+    return res.json({
+      status: "ok",
+      supabase_connected: false
+    });
+  }
   try {
     const check = await fetch(`${url}/rest/v1/suppliers?select=id&limit=1`, {
       headers: {
@@ -1175,11 +1181,10 @@ app.get("/api/status", async (req: Request, res: Response) => {
       status: "ok",
       supabase_connected: check.ok
     });
-  } catch (err: any) {
+  } catch (_err) {
     res.json({
       status: "ok",
-      supabase_connected: false,
-      error: err.message
+      supabase_connected: false
     });
   }
 });
@@ -2685,4 +2690,7 @@ async function startServer() {
   });
 }
 
-startServer();
+const isCloudflare = typeof (globalThis as any).WebSocketPair !== "undefined" || (typeof navigator !== "undefined" && (navigator as any).userAgent === "Cloudflare-Workers");
+if (!isCloudflare) {
+  startServer();
+}
