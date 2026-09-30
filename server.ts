@@ -2578,13 +2578,27 @@ app.all(["/api/export/excel/purchases"], requireOwner, async (req: Request, res:
   try {
     const transactions = await fetchAllSupabaseTransactions(url, key, "transaction_date.desc", "*");
     const filter = (req.query.filter || req.body?.time_filter || "all_time") as string;
-    const dateFrom = (req.query.date_from || req.body?.date_from) as string;
-    const dateTo = (req.query.date_to || req.body?.date_to) as string;
+    const dateFrom = (req.query.date_from || req.body?.date_from || req.query.from || req.body?.from) as string;
+    const dateTo = (req.query.date_to || req.body?.date_to || req.query.to || req.body?.to) as string;
     const search = ((req.query.search || req.body?.search || "") as string).toLowerCase();
+    const taxStatus = (req.query.tax_status || req.query.purchase_type || req.body?.tax_status || req.body?.purchase_type || "all") as string;
 
     const filtered = transactions.filter((t: any) => {
+      if (t.transaction_type === "sales") return false;
       if (dateFrom && t.transaction_date < dateFrom) return false;
       if (dateTo && t.transaction_date > dateTo) return false;
+
+      const vatAmt = Number(t.vat_amount || 0);
+      const vatRate = Number(t.vat_rate || 0);
+      const taxMode = String(t.tax_mode || "").toLowerCase().trim();
+      const isTaxApplied = (vatAmt > 0 || vatRate > 0 || taxMode === "inclusive" || taxMode === "exclusive") && taxMode !== "exempt";
+
+      if (taxStatus === "taxable" || taxStatus === "tax_applied") {
+        if (!isTaxApplied) return false;
+      } else if (taxStatus === "non_taxable" || taxStatus === "no_vat") {
+        if (isTaxApplied) return false;
+      }
+
       if (search) {
         const match =
           String(t.party_name || "").toLowerCase().includes(search) ||
@@ -2599,11 +2613,228 @@ app.all(["/api/export/excel/purchases"], requireOwner, async (req: Request, res:
     res.json({
       success: true,
       filename: exportData.filename,
+      csv: exportData.csvContent,
       csv_content: exportData.csvContent,
+      count: filtered.length,
+      records: filtered,
       message: "Purchases Tax Ledger Excel export generated successfully"
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 8.1 Enhanced Dedicated Purchase Export API (Owner & Auth Protected)
+app.all(["/api/export/purchases"], requireAuth, async (req: Request, res: Response) => {
+  const { url, key } = getSupabaseConfig();
+  if (!url || !key) {
+    return res.status(503).json({ success: false, error: "Database configuration unavailable" });
+  }
+
+  try {
+    const from = String(req.query.from || req.query.date_from || req.body?.from || req.body?.date_from || "").trim();
+    const to = String(req.query.to || req.query.date_to || req.body?.to || req.body?.date_to || "").trim();
+    const taxStatusRaw = String(req.query.tax_status || req.query.purchase_type || req.body?.tax_status || req.body?.purchase_type || "all").toLowerCase().trim();
+    const format = String(req.query.format || req.body?.format || "csv").toLowerCase().trim();
+
+    // 1. Input Validation
+    if (!from) {
+      return res.status(400).json({ success: false, error: "Date From is required (from=YYYY-MM-DD)." });
+    }
+    if (!to) {
+      return res.status(400).json({ success: false, error: "Date To is required (to=YYYY-MM-DD)." });
+    }
+    if (from > to) {
+      return res.status(400).json({ success: false, error: "Date From cannot be after Date To." });
+    }
+
+    // Map Tax Status
+    let taxStatus: "taxable" | "non_taxable" | "all" = "all";
+    if (taxStatusRaw === "taxable" || taxStatusRaw === "tax_applied" || taxStatusRaw === "1") {
+      taxStatus = "taxable";
+    } else if (taxStatusRaw === "non_taxable" || taxStatusRaw === "no_vat" || taxStatusRaw === "2") {
+      taxStatus = "non_taxable";
+    }
+
+    // 2. Server-side/Database-side Filtering via Supabase REST API
+    let queryParams = `transaction_type=eq.purchases&transaction_date=gte.${encodeURIComponent(from)}&transaction_date=lte.${encodeURIComponent(to)}&order=transaction_date.asc`;
+    if (taxStatus === "taxable") {
+      queryParams += "&vat_amount=gt.0";
+    } else if (taxStatus === "non_taxable") {
+      queryParams += "&vat_amount=eq.0";
+    }
+
+    const resp = await fetch(`${url}/rest/v1/transactions?select=*&${queryParams}`, {
+      headers: {
+        apikey: key,
+        Authorization: `Bearer ${key}`
+      }
+    });
+
+    if (!resp.ok) {
+      const errText = await resp.text();
+      return res.status(500).json({ success: false, error: `Database query failed: ${errText}` });
+    }
+
+    const rawTxList = await resp.json();
+    const transactions: any[] = Array.isArray(rawTxList) ? rawTxList : [];
+
+    // 3. Authoritative classification using stored DB fields
+    const filteredPurchases = transactions.filter((t: any) => {
+      if (t.transaction_type === "sales") return false; // Strictly exclude sales
+
+      // Inclusive date check
+      if (from && t.transaction_date < from) return false;
+      if (to && t.transaction_date > to) return false;
+
+      const vatAmt = Number(t.vat_amount || 0);
+      const vatRate = Number(t.vat_rate || 0);
+      const taxMode = String(t.tax_mode || "").toLowerCase().trim();
+
+      const isTaxApplied = (vatAmt > 0 || vatRate > 0 || taxMode === "inclusive" || taxMode === "exclusive") && taxMode !== "exempt";
+
+      if (taxStatus === "taxable") {
+        return isTaxApplied;
+      } else if (taxStatus === "non_taxable") {
+        return !isTaxApplied;
+      }
+      return true; // "all"
+    });
+
+    // 4. Handle Empty State
+    if (filteredPurchases.length === 0) {
+      return res.status(200).json({
+        success: false,
+        count: 0,
+        message: "No purchase records found for the selected date range and tax classification."
+      });
+    }
+
+    // 5. Calculate Totals & Summary Breakdown
+    let totalTaxableNet = 0;
+    let totalTaxableVat = 0;
+    let totalTaxableGross = 0;
+    let countTaxable = 0;
+
+    let totalNonTaxableNet = 0;
+    let totalNonTaxableVat = 0;
+    let totalNonTaxableGross = 0;
+    let countNonTaxable = 0;
+
+    filteredPurchases.forEach((t: any) => {
+      const net = Number(t.amount_before_tax || 0);
+      const vat = Number(t.vat_amount || 0);
+      const gross = Number(t.amount_with_tax || 0);
+
+      const taxMode = String(t.tax_mode || "").toLowerCase().trim();
+      const vatRate = Number(t.vat_rate || 0);
+      const isTaxApplied = (vat > 0 || vatRate > 0 || taxMode === "inclusive" || taxMode === "exclusive") && taxMode !== "exempt";
+
+      if (isTaxApplied) {
+        countTaxable++;
+        totalTaxableNet += net;
+        totalTaxableVat += vat;
+        totalTaxableGross += gross;
+      } else {
+        countNonTaxable++;
+        totalNonTaxableNet += net;
+        totalNonTaxableVat += vat;
+        totalNonTaxableGross += gross;
+      }
+    });
+
+    totalTaxableNet = Math.round(totalTaxableNet * 100) / 100;
+    totalTaxableVat = Math.round(totalTaxableVat * 100) / 100;
+    totalTaxableGross = Math.round(totalTaxableGross * 100) / 100;
+
+    totalNonTaxableNet = Math.round(totalNonTaxableNet * 100) / 100;
+    totalNonTaxableVat = Math.round(totalNonTaxableVat * 100) / 100;
+    totalNonTaxableGross = Math.round(totalNonTaxableGross * 100) / 100;
+
+    const grandTotalCount = countTaxable + countNonTaxable;
+    const grandTotalNet = Math.round((totalTaxableNet + totalNonTaxableNet) * 100) / 100;
+    const grandTotalVat = Math.round((totalTaxableVat + totalNonTaxableVat) * 100) / 100;
+    const grandTotalGross = Math.round((totalTaxableGross + totalNonTaxableGross) * 100) / 100;
+
+    // Filename convention
+    let statusLabel = "All";
+    let statusLabelAr = "تقرير شامل المشتريات بالضريبة + بدون الضريبة";
+    if (taxStatus === "taxable") {
+      statusLabel = "TaxApplied";
+      statusLabelAr = "المشتريات المطبق بها الضريبة";
+    } else if (taxStatus === "non_taxable") {
+      statusLabel = "NonTaxable";
+      statusLabelAr = "المشتريات التي لا تنطبق عليها الضريبة";
+    }
+
+    const filenameBase = `Purchases_${statusLabel}_${from}_to_${to}`;
+
+    // 6. Build CSV Export Content
+    let csv = "\ufeff"; // UTF-8 BOM for Arabic Excel Support
+    csv += `Seq,Date,Invoice No,Party Name,TRN,Amount Before Tax,VAT Rate,VAT Amount,Amount With Tax,Tax Mode\n`;
+
+    filteredPurchases.forEach((t: any, idx: number) => {
+      const seq = idx + 1;
+      const date = t.transaction_date || "";
+      const inv = `"${String(t.invoice_no || "").replace(/"/g, '""')}"`;
+      const party = `"${String(t.party_name || "").replace(/"/g, '""')}"`;
+      const trn = `"${String(t.trn || "")}"`;
+      const net = Number(t.amount_before_tax || 0).toFixed(2);
+      const vatRateStr = t.tax_mode === "exempt" ? "0%" : `${(Number(t.vat_rate || 0.05) * 100).toFixed(0)}%`;
+      const vat = Number(t.vat_amount || 0).toFixed(2);
+      const gross = Number(t.amount_with_tax || 0).toFixed(2);
+      const mode = t.tax_mode || "inclusive";
+
+      csv += `${seq},${date},${inv},${party},${trn},${net},${vatRateStr},${vat},${gross},${mode}\n`;
+    });
+
+    csv += `\n`;
+    csv += `=== SUMMARY & BREAKDOWN TOTALS (${statusLabelAr}) ===\n`;
+    csv += `Category,Count,Amount Before Tax (Net),VAT Amount,Amount With Tax (Gross)\n`;
+
+    if (taxStatus === "all" || taxStatus === "taxable") {
+      csv += `TAX-APPLIED PURCHASES (المشتريات المطبق بها الضريبة),${countTaxable},${totalTaxableNet.toFixed(2)},${totalTaxableVat.toFixed(2)},${totalTaxableGross.toFixed(2)}\n`;
+    }
+    if (taxStatus === "all" || taxStatus === "non_taxable") {
+      csv += `NON-TAXABLE / NO-VAT PURCHASES (المشتريات التي لا تنطبق عليها الضريبة),${countNonTaxable},${totalNonTaxableNet.toFixed(2)},${totalNonTaxableVat.toFixed(2)},${totalNonTaxableGross.toFixed(2)}\n`;
+    }
+    if (taxStatus === "all") {
+      csv += `GRAND TOTAL (إجمالي المشتريات الشامل),${grandTotalCount},${grandTotalNet.toFixed(2)},${grandTotalVat.toFixed(2)},${grandTotalGross.toFixed(2)}\n`;
+    }
+
+    csv += `\n"Developed by Eng. Mahmoud Mohamed | mahmoud.m@sdi.ae"\n`;
+
+    return res.json({
+      success: true,
+      filename: `${filenameBase}.${format === "pdf" ? "pdf" : "csv"}`,
+      csv: csv,
+      csv_content: csv,
+      records: filteredPurchases,
+      count: filteredPurchases.length,
+      summary: {
+        taxable: {
+          count: countTaxable,
+          net: totalTaxableNet,
+          vat: totalTaxableVat,
+          gross: totalTaxableGross
+        },
+        non_taxable: {
+          count: countNonTaxable,
+          net: totalNonTaxableNet,
+          vat: totalNonTaxableVat,
+          gross: totalNonTaxableGross
+        },
+        grand_total: {
+          count: grandTotalCount,
+          net: grandTotalNet,
+          vat: grandTotalVat,
+          gross: grandTotalGross
+        }
+      }
+    });
+
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
 
@@ -2691,6 +2922,6 @@ async function startServer() {
 }
 
 const isCloudflare = typeof (globalThis as any).WebSocketPair !== "undefined" || (typeof navigator !== "undefined" && (navigator as any).userAgent === "Cloudflare-Workers");
-if (!isCloudflare) {
+if (!isCloudflare && process.env.NODE_ENV !== "test") {
   startServer();
 }

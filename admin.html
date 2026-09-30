@@ -978,6 +978,74 @@
             </div>
           </div>
 
+          <!-- ENHANCED PURCHASE EXPORT CONTROL BAR -->
+          <div class="p-3 bg-gradient-to-r from-rose-100/80 via-white to-rose-50 border-b border-rose-200/90 no-print" id="purchase-export-bar">
+            <div class="flex flex-col xl:flex-row items-start xl:items-center justify-between gap-2.5">
+              <div class="flex items-center space-x-2 shrink-0">
+                <span class="text-xs font-extrabold text-rose-950 uppercase tracking-wide flex items-center gap-1.5">
+                  <span class="text-rose-700 font-bold">📥 Purchase Export Filter / تصدير المشتريات:</span>
+                </span>
+              </div>
+
+              <div class="flex flex-wrap items-center gap-2 w-full xl:w-auto text-xs">
+                <!-- Date From -->
+                <div class="flex items-center space-x-1.5 bg-white px-2.5 py-1 rounded-lg border border-rose-300 shadow-2xs">
+                  <label for="purchase-export-date-from" class="text-[11px] font-bold text-rose-900 shrink-0">Date From:</label>
+                  <input 
+                    type="date" 
+                    id="purchase-export-date-from" 
+                    class="px-1 py-0.5 bg-transparent border-0 text-xs font-mono font-bold text-slate-800 outline-none focus:ring-0 cursor-pointer"
+                  />
+                </div>
+
+                <!-- Date To -->
+                <div class="flex items-center space-x-1.5 bg-white px-2.5 py-1 rounded-lg border border-rose-300 shadow-2xs">
+                  <label for="purchase-export-date-to" class="text-[11px] font-bold text-rose-900 shrink-0">Date To:</label>
+                  <input 
+                    type="date" 
+                    id="purchase-export-date-to" 
+                    class="px-1 py-0.5 bg-transparent border-0 text-xs font-mono font-bold text-slate-800 outline-none focus:ring-0 cursor-pointer"
+                  />
+                </div>
+
+                <!-- Purchase Type -->
+                <div class="flex items-center space-x-1.5 bg-white px-2.5 py-1 rounded-lg border border-rose-300 shadow-2xs">
+                  <label for="purchase-export-tax-type" class="text-[11px] font-bold text-rose-900 shrink-0">Purchase Type:</label>
+                  <select 
+                    id="purchase-export-tax-type" 
+                    class="px-1 py-0.5 bg-transparent border-0 text-xs font-bold text-rose-950 outline-none focus:ring-0 cursor-pointer"
+                  >
+                    <option value="taxable">1. TAX-APPLIED PURCHASES | المشتريات المطبق بها الضريبة</option>
+                    <option value="non_taxable">2. NON-TAXABLE / NO-VAT PURCHASES | المشتريات التي لا تنطبق عليها الضريبة</option>
+                    <option value="all" selected>3. ALL PURCHASES | تقرير شامل المشتريات بالضريبة + بدون الضريبة</option>
+                  </select>
+                </div>
+
+                <!-- Export Actions -->
+                <div class="flex items-center space-x-1.5 shrink-0 ml-auto xl:ml-0">
+                  <button 
+                    type="button" 
+                    data-onclick="executePurchaseExport('csv')" 
+                    id="btn-run-purchase-export-csv"
+                    class="px-3 py-1.5 rounded-lg bg-rose-700 hover:bg-rose-800 text-white font-bold text-xs transition-all flex items-center space-x-1 shadow-xs cursor-pointer active:scale-95"
+                    title="Export Purchase Report to CSV / Excel with Arabic UTF-8-SIG encoding"
+                  >
+                    <span>📊 Export Excel/CSV</span>
+                  </button>
+                  <button 
+                    type="button" 
+                    data-onclick="executePurchaseExport('pdf')" 
+                    id="btn-run-purchase-export-pdf"
+                    class="px-3 py-1.5 rounded-lg bg-rose-800 hover:bg-rose-900 text-white font-bold text-xs transition-all flex items-center space-x-1 shadow-xs cursor-pointer active:scale-95"
+                    title="Export Purchase Report to Landscape A4 PDF"
+                  >
+                    <span>📄 Export PDF</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
           <!-- Purchases Table Scrollable Container (Fixed Height with Sticky Header) -->
           <div class="max-h-[600px] overflow-y-auto overflow-x-auto relative divide-y divide-slate-100">
             <table class="w-full text-left border-collapse whitespace-nowrap" id="purchases-ledger-table">
@@ -7730,6 +7798,234 @@
     window.executeConfirmedDelete = executeConfirmedDelete;
     window.deleteTransaction = deleteTransaction;
     window.confirmDeleteTransaction = deleteTransaction;
+    window.executePurchaseExport = executePurchaseExport;
+
+    /**
+     * =========================================================================
+     * ENHANCED PURCHASE EXPORT SYSTEM (Tax-Applied, Non-Taxable, All Purchases)
+     * =========================================================================
+     */
+    async function executePurchaseExport(format = "csv") {
+      const dateFromEl = document.getElementById("purchase-export-date-from");
+      const dateToEl = document.getElementById("purchase-export-date-to");
+      const taxTypeEl = document.getElementById("purchase-export-tax-type");
+
+      const dateFrom = dateFromEl ? dateFromEl.value.trim() : "";
+      const dateTo = dateToEl ? dateToEl.value.trim() : "";
+      const taxType = taxTypeEl ? taxTypeEl.value : "all";
+
+      // 1. Client-side Input Validation
+      if (!dateFrom) {
+        showToast("Date From is required. / يرجى تحديد تاريخ البداية", "error");
+        if (dateFromEl) dateFromEl.focus();
+        return;
+      }
+
+      if (!dateTo) {
+        showToast("Date To is required. / يرجى تحديد تاريخ النهاية", "error");
+        if (dateToEl) dateToEl.focus();
+        return;
+      }
+
+      if (dateFrom > dateTo) {
+        showToast("Date From cannot be after Date To. / تاريخ البداية لا يمكن أن يكون بعد تاريخ النهاية", "error");
+        return;
+      }
+
+      let typeLabel = "ALL PURCHASES";
+      if (taxType === "taxable") typeLabel = "TAX-APPLIED PURCHASES";
+      if (taxType === "non_taxable") typeLabel = "NON-TAXABLE PURCHASES";
+
+      showToast(`Generating Purchase Report (${typeLabel}) from ${dateFrom} to ${dateTo}...`, "info");
+
+      const btnCsv = document.getElementById("btn-run-purchase-export-csv");
+      const btnPdf = document.getElementById("btn-run-purchase-export-pdf");
+      if (btnCsv) btnCsv.disabled = true;
+      if (btnPdf) btnPdf.disabled = true;
+
+      try {
+        const params = new URLSearchParams({
+          from: dateFrom,
+          to: dateTo,
+          tax_status: taxType,
+          format: format
+        });
+
+        const token = localStorage.getItem("uae_tax_token") || sessionStorage.getItem("uae_tax_token") || "";
+        const headers = { "Content-Type": "application/json" };
+        if (token) headers["Authorization"] = `Bearer ${token}`;
+
+        const resp = await fetch(`/api/export/purchases?${params.toString()}`, { headers });
+        const data = await resp.json();
+
+        if (!resp.ok || !data.success || !data.records || data.records.length === 0) {
+          const warningMsg = (data && data.message) 
+            ? data.message 
+            : "No purchase records found for the selected date range and tax classification. / لم يتم العثور على سجلات مشتريات للفترة ونوع الضريبة المحددة";
+          showToast(warningMsg, "warning");
+          return;
+        }
+
+        if (format === "pdf") {
+          printPurchaseExportDocument(data, taxType, dateFrom, dateTo);
+          showToast(`✓ Purchase Report PDF (${data.count} records) generated successfully!`, "success");
+        } else {
+          // Download CSV/Excel with UTF-8 BOM
+          const csvContent = data.csv || data.csv_content || "";
+          const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement("a");
+          link.setAttribute("href", url);
+          link.setAttribute("download", data.filename || `Purchases_${taxType}_${dateFrom}_to_${dateTo}.csv`);
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          URL.revokeObjectURL(url);
+
+          showToast(`✓ Downloaded Purchase Report (${data.count} records) successfully!`, "success");
+        }
+
+      } catch (err) {
+        console.error("Purchase export failed:", err);
+        showToast(`Export error: ${err.message || String(err)}`, "error");
+      } finally {
+        if (btnCsv) btnCsv.disabled = false;
+        if (btnPdf) btnPdf.disabled = false;
+      }
+    }
+
+    function printPurchaseExportDocument(exportData, taxType, dateFrom, dateTo) {
+      let title = "PURCHASES REPORT (ALL PURCHASES)";
+      if (taxType === "taxable") title = "TAX-APPLIED PURCHASES REPORT (INPUT VAT 5%)";
+      if (taxType === "non_taxable") title = "NON-TAXABLE / NO-VAT PURCHASES REPORT";
+
+      const records = exportData.records || [];
+      const summary = exportData.summary || {};
+
+      let rowsHtml = records.map((r, i) => `
+        <tr style="border-bottom: 1px solid #f1f5f9; font-size: 11px;">
+          <td style="padding: 6px 8px; text-align: center;">${i + 1}</td>
+          <td style="padding: 6px 8px;">${r.transaction_date || '—'}</td>
+          <td style="padding: 6px 8px; font-weight: bold; color: #e11d48;">${escapeHtml(r.invoice_no || '—')}</td>
+          <td style="padding: 6px 8px;">${escapeHtml(r.party_name || '—')}</td>
+          <td style="padding: 6px 8px; font-family: monospace;">${escapeHtml(r.trn || '—')}</td>
+          <td style="padding: 6px 8px; text-align: right;">${formatAED(r.amount_before_tax)}</td>
+          <td style="padding: 6px 8px; text-align: center;">${r.tax_mode === 'exempt' ? '0%' : '5%'}</td>
+          <td style="padding: 6px 8px; text-align: right; color: #e11d48; font-weight: bold;">${formatAED(r.vat_amount)}</td>
+          <td style="padding: 6px 8px; text-align: right; font-weight: bold;">${formatAED(r.amount_with_tax)}</td>
+          <td style="padding: 6px 8px; text-align: center; font-size: 10px; color: #64748b;">${r.tax_mode || 'inclusive'}</td>
+        </tr>
+      `).join('');
+
+      let summaryHtml = '';
+      if (summary.grand_total) {
+        summaryHtml = `
+          <div style="margin-top: 20px; padding: 15px; background: #fff1f2; border: 1px solid #fecdd3; border-radius: 8px;">
+            <h4 style="margin: 0 0 10px 0; color: #9f1239; font-size: 13px; font-weight: bold;">SUMMARY & BREAKDOWN TOTALS</h4>
+            <table style="width: 100%; border-collapse: collapse; font-size: 11px;">
+              <thead>
+                <tr style="border-bottom: 2px solid #fda4af; text-align: left; color: #881337;">
+                  <th style="padding: 6px;">Category</th>
+                  <th style="padding: 6px; text-align: center;">Count</th>
+                  <th style="padding: 6px; text-align: right;">Amount Before Tax (Net)</th>
+                  <th style="padding: 6px; text-align: right;">VAT Amount</th>
+                  <th style="padding: 6px; text-align: right;">Amount With Tax (Gross)</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${summary.taxable ? `
+                <tr style="border-bottom: 1px solid #ffe4e6;">
+                  <td style="padding: 6px; font-weight: bold;">TAX-APPLIED PURCHASES</td>
+                  <td style="padding: 6px; text-align: center;">${summary.taxable.count}</td>
+                  <td style="padding: 6px; text-align: right;">${formatAED(summary.taxable.net)}</td>
+                  <td style="padding: 6px; text-align: right; color: #e11d48;">${formatAED(summary.taxable.vat)}</td>
+                  <td style="padding: 6px; text-align: right; font-weight: bold;">${formatAED(summary.taxable.gross)}</td>
+                </tr>` : ''}
+                ${summary.non_taxable ? `
+                <tr style="border-bottom: 1px solid #ffe4e6;">
+                  <td style="padding: 6px; font-weight: bold;">NON-TAXABLE / NO-VAT PURCHASES</td>
+                  <td style="padding: 6px; text-align: center;">${summary.non_taxable.count}</td>
+                  <td style="padding: 6px; text-align: right;">${formatAED(summary.non_taxable.net)}</td>
+                  <td style="padding: 6px; text-align: right; color: #64748b;">${formatAED(summary.non_taxable.vat)}</td>
+                  <td style="padding: 6px; text-align: right; font-weight: bold;">${formatAED(summary.non_taxable.gross)}</td>
+                </tr>` : ''}
+                <tr style="font-weight: bold; background: #ffe4e6;">
+                  <td style="padding: 8px;">GRAND TOTAL</td>
+                  <td style="padding: 8px; text-align: center;">${summary.grand_total.count}</td>
+                  <td style="padding: 8px; text-align: right;">${formatAED(summary.grand_total.net)}</td>
+                  <td style="padding: 8px; text-align: right; color: #e11d48;">${formatAED(summary.grand_total.vat)}</td>
+                  <td style="padding: 8px; text-align: right;">${formatAED(summary.grand_total.gross)}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        `;
+      }
+
+      const printWindow = window.open("", "_blank");
+      if (!printWindow) return;
+
+      printWindow.document.write(\`
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <title>\${title}</title>
+          <style>
+            @page { size: A4 landscape; margin: 12mm; }
+            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #0f172a; margin: 0; padding: 10px; }
+            .header { border-bottom: 2px solid #e11d48; padding-bottom: 10px; margin-bottom: 15px; display: flex; justify-content: space-between; align-items: flex-end; }
+            .title { color: #881337; font-size: 16px; font-weight: 800; margin: 0; }
+            .meta { font-size: 11px; color: #64748b; margin-top: 4px; }
+            table.data-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+            table.data-table th { background: #be123c; color: white; padding: 8px; font-size: 10px; text-transform: uppercase; text-align: left; }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <div>
+              <h1 class="title">\${title}</h1>
+              <div class="meta">Date Range: \${dateFrom} to \${dateTo} | Records: \${records.length}</div>
+            </div>
+            <div style="text-align: right; font-size: 10px; color: #64748b;">
+              UAE Tax & Accounting System<br>
+              Generated: \${new Date().toISOString().slice(0, 10)}
+            </div>
+          </div>
+
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th style="text-align: center; width: 30px;">Seq</th>
+                <th>Date</th>
+                <th>Invoice No</th>
+                <th>Party Name</th>
+                <th>TRN</th>
+                <th style="text-align: right;">Amount Before Tax</th>
+                <th style="text-align: center;">VAT Rate</th>
+                <th style="text-align: right;">VAT Amount</th>
+                <th style="text-align: right;">Amount With Tax</th>
+                <th style="text-align: center;">Tax Mode</th>
+              </tr>
+            </thead>
+            <tbody>
+              \${rowsHtml}
+            </tbody>
+          </table>
+
+          \${summaryHtml}
+
+          <div style="margin-top: 20px; text-align: center; font-size: 10px; color: #94a3b8; border-top: 1px solid #e2e8f0; padding-top: 8px;">
+            Developed by Eng. Mahmoud Mohamed | mahmoud.m@sdi.ae
+          </div>
+
+          <script>
+            window.onload = function() { window.print(); };
+          </script>
+        </body>
+        </html>
+      \`);
+      printWindow.document.close();
+    }
 
     /**
      * =========================================================================
@@ -8054,20 +8350,6 @@
         <html>
         <head>
           <title>${title} - A4 Landscape</title>
-          <style>
-            @page { size: A4 landscape; margin: 12mm; }
-            body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: #0f172a; margin: 0; padding: 15px; }
-            .header { display: flex; justify-content: space-between; border-bottom: 2px solid ${themeColor}; padding-bottom: 12px; margin-bottom: 16px; }
-            .title { font-size: 18px; font-weight: bold; color: ${themeColor}; }
-            .meta { font-size: 11px; color: #64748b; }
-            .summary-box { display: flex; gap: 20px; background: ${lightTheme}; border: 1px solid ${themeColor}40; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; font-size: 12px; }
-            .stat-val { font-size: 14px; font-weight: bold; font-family: monospace; color: #0f172a; }
-            table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-            th { background: ${themeColor}; color: white; padding: 8px; font-size: 11px; text-align: left; text-transform: uppercase; }
-            th.right { text-align: right; }
-            th.center { text-align: center; }
-            .footer { margin-top: 25px; padding-top: 10px; border-top: 1px solid #e2e8f0; font-size: 11px; color: #64748b; display: flex; justify-content: space-between; }
-          </style>
         </head>
         <body>
           <div class="header">
@@ -8126,6 +8408,23 @@
         </body>
         </html>
       `);
+
+      const styleEl = printWindow.document.createElement("style");
+      styleEl.textContent = `
+        @page { size: A4 landscape; margin: 12mm; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: #0f172a; margin: 0; padding: 15px; }
+        .header { display: flex; justify-content: space-between; border-bottom: 2px solid ${themeColor}; padding-bottom: 12px; margin-bottom: 16px; }
+        .title { font-size: 18px; font-weight: bold; color: ${themeColor}; }
+        .meta { font-size: 11px; color: #64748b; }
+        .summary-box { display: flex; gap: 20px; background: ${lightTheme}; border: 1px solid ${themeColor}40; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; font-size: 12px; }
+        .stat-val { font-size: 14px; font-weight: bold; font-family: monospace; color: #0f172a; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th { background: ${themeColor}; color: white; padding: 8px; font-size: 11px; text-align: left; text-transform: uppercase; }
+        th.right { text-align: right; }
+        th.center { text-align: center; }
+        .footer { margin-top: 25px; padding-top: 10px; border-top: 1px solid #e2e8f0; font-size: 11px; color: #64748b; display: flex; justify-content: space-between; }
+      `;
+      printWindow.document.head.appendChild(styleEl);
       printWindow.document.close();
     }
   
