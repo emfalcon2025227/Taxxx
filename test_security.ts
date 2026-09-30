@@ -264,6 +264,111 @@ async function runTests() {
     assert(false, "23. Test error: " + e.message);
   }
 
+  // 24. Unauthenticated POST /api/import/suppliers rejected with 401
+  try {
+    const res = await fetch(`${BASE_URL}/api/import/suppliers`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rows: [{ name: "Test Supplier", trn: "100200300400003" }] })
+    });
+    assert(res.status === 401, "24. Unauthenticated supplier import rejected with HTTP 401");
+  } catch (e: any) {
+    assert(false, "24. Test error: " + e.message);
+  }
+
+  // 25. Clerk POST /api/import/suppliers rejected with 403 Forbidden
+  try {
+    const res = await fetch(`${BASE_URL}/api/import/suppliers`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${clerkToken}`
+      },
+      body: JSON.stringify({ rows: [{ name: "Test Supplier", trn: "100200300400003" }] })
+    });
+    assert(res.status === 403, "25. Clerk role rejected from importing suppliers with HTTP 403 Forbidden");
+  } catch (e: any) {
+    assert(false, "25. Test error: " + e.message);
+  }
+
+  // 26. Invalid payload (missing rows array) rejected with 400 Bad Request
+  try {
+    const res = await fetch(`${BASE_URL}/api/import/suppliers`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${ownerToken}`
+      },
+      body: JSON.stringify({ invalid: true })
+    });
+    assert(res.status === 400, "26. Invalid payload without rows array rejected with HTTP 400 Bad Request");
+  } catch (e: any) {
+    assert(false, "26. Test error: " + e.message);
+  }
+
+  // 27. Strict TRN validation: Row with non-15 digit TRN rejected with 400 Bad Request
+  try {
+    const res = await fetch(`${BASE_URL}/api/import/suppliers`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${ownerToken}`
+      },
+      body: JSON.stringify({ rows: [{ name: "Invalid TRN Co", trn: "12345" }] })
+    });
+    assert(res.status === 400, "27. Non-15 digit TRN strictly rejected with HTTP 400 Bad Request");
+  } catch (e: any) {
+    assert(false, "27. Test error: " + e.message);
+  }
+
+  // 28. Strict Name validation: Row with blank name rejected with 400 Bad Request
+  try {
+    const res = await fetch(`${BASE_URL}/api/import/suppliers`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${ownerToken}`
+      },
+      body: JSON.stringify({ rows: [{ name: "", trn: "100999888777003" }] })
+    });
+    assert(res.status === 400, "28. Missing/blank supplier name strictly rejected with HTTP 400 Bad Request");
+  } catch (e: any) {
+    assert(false, "28. Test error: " + e.message);
+  }
+
+  // 29. Real Database Write & Read-After-Write Verification
+  try {
+    const uniqueTrn = "100888777666003";
+    const uniqueName = "VERIFIED_TEST_SUPPLIER_SDI";
+    
+    // Step 1: POST supplier import
+    const importRes = await fetch(`${BASE_URL}/api/import/suppliers`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${ownerToken}`
+      },
+      body: JSON.stringify({
+        rows: [{ name: uniqueName, trn: uniqueTrn }]
+      })
+    });
+    const importData = await importRes.json();
+    const importSucceeded = importRes.status === 200 && (importData.success === true || importData.inserted_count > 0);
+
+    // Step 2: Independent read-back from GET /api/suppliers
+    const getRes = await fetch(`${BASE_URL}/api/suppliers`, {
+      headers: { Authorization: `Bearer ${ownerToken}` }
+    });
+    const suppliersList = await getRes.json();
+    const recordExists = Array.isArray(suppliersList) && suppliersList.some((s: any) => 
+      String(s.trn || "").trim() === uniqueTrn && String(s.name || "").trim() === uniqueName
+    );
+
+    assert(importSucceeded && recordExists, "29. Real DB persistence verified: Supplier successfully written and independently read back via GET /api/suppliers");
+  } catch (e: any) {
+    assert(false, "29. Real DB read-after-write test error: " + e.message);
+  }
+
   console.log("\n=======================================================");
   console.log(`TEST SUMMARY: ${passedCount} / ${totalCount} PASSED`);
   console.log("=======================================================\n");

@@ -16,9 +16,8 @@ import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
-import { createServer as createViteServer } from "vite";
 
-const app = express();
+export const app = express();
 const PORT = Number(process.env.PORT || 3000);
 
 // ============================================================================
@@ -90,7 +89,51 @@ app.use((_req: Request, res: Response, next: NextFunction) => {
   next();
 });
 
-// Rate Limiters (CQ-05)
+// Rate Limiters (CQ-05) - Safe In-Memory Store without global setInterval for Cloudflare Workers compatibility
+class SafeMemoryStore {
+  localKeys = true;
+  windowMs = 60000;
+  hits = new Map<string, { totalHits: number; resetTime: Date }>();
+
+  init(options: any) {
+    if (options && options.windowMs) this.windowMs = options.windowMs;
+  }
+
+  async get(key: string) {
+    const entry = this.hits.get(key);
+    if (!entry) return undefined;
+    if (entry.resetTime.getTime() <= Date.now()) {
+      this.hits.delete(key);
+      return undefined;
+    }
+    return entry;
+  }
+
+  async increment(key: string) {
+    const now = Date.now();
+    let client = this.hits.get(key);
+    if (!client || client.resetTime.getTime() <= now) {
+      client = { totalHits: 0, resetTime: new Date(now + this.windowMs) };
+      this.hits.set(key, client);
+    }
+    client.totalHits++;
+    return client;
+  }
+
+  async decrement(key: string) {
+    const client = this.hits.get(key);
+    if (client && client.totalHits > 0) client.totalHits--;
+  }
+
+  async resetKey(key: string) {
+    this.hits.delete(key);
+  }
+
+  async resetAll() {
+    this.hits.clear();
+  }
+}
+
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 200, // Generous limit for dev / preview testing
@@ -98,6 +141,7 @@ const authLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   validate: false,
+  store: new SafeMemoryStore(),
   message: { success: false, error: "Too many login attempts. Please try again after 15 minutes." }
 });
 
@@ -107,6 +151,7 @@ const userMutationLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   validate: false,
+  store: new SafeMemoryStore(),
   message: { success: false, error: "Too many user management requests. Please try again later." }
 });
 
@@ -116,6 +161,7 @@ const importLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   validate: false,
+  store: new SafeMemoryStore(),
   message: { success: false, error: "Too many import requests. Please slow down." }
 });
 
@@ -125,6 +171,7 @@ const supplierImportLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   validate: false,
+  store: new SafeMemoryStore(),
   message: { success: false, error: "Too many supplier import requests. Please slow down." }
 });
 
@@ -134,6 +181,7 @@ const analyticsLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   validate: false,
+  store: new SafeMemoryStore(),
   message: { success: false, error: "Too many analytics requests. Please slow down." }
 });
 
@@ -143,6 +191,7 @@ const resetDataLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   validate: false,
+  store: new SafeMemoryStore(),
   message: { success: false, error: "Too many reset data requests. Operation rate-limited." }
 });
 
@@ -152,6 +201,7 @@ const apiLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   validate: false,
+  store: new SafeMemoryStore(),
   message: { success: false, error: "Too many API requests. Please slow down." }
 });
 
@@ -1123,8 +1173,7 @@ app.get("/api/status", async (req: Request, res: Response) => {
     });
     res.json({
       status: "ok",
-      supabase_connected: check.ok,
-      url: url.replace(/https?:\/\//, "").split(".")[0] + ".supabase.co"
+      supabase_connected: check.ok
     });
   } catch (err: any) {
     res.json({
@@ -2255,16 +2304,39 @@ app.post("/api/import/suppliers", supplierImportLimiter, requireOwner, async (re
     return res.status(400).json({ success: false, error: "Invalid payload, 'rows' array expected" });
   }
 
-  const cleanedSuppliers = rows.map((r: any) => {
-    let trnRaw = String(r.trn || "").trim();
-    let trnDigits = trnRaw.replace(/\D/g, "");
-    if (trnDigits.length > 0 && trnDigits.length < 15) trnDigits = trnDigits.padStart(15, "0");
-    if (trnDigits.length > 15) trnDigits = trnDigits.slice(0, 15);
-    return {
-      name: String(r.name || "UNKNOWN_SUPPLIER").trim(),
-      trn: trnDigits || trnRaw
-    };
+  const cleanedSuppliers: Array<{ name: string; trn: string }> = [];
+  const invalidRows: Array<{ row: number; name: string; trn: string; reason: string }> = [];
+
+  rows.forEach((r: any, idx: number) => {
+    const name = String(r.name || "").trim();
+    const trnRaw = String(r.trn || "").trim();
+    const isStrictTrn = /^[0-9]{15}$/.test(trnRaw);
+    const isInvalidName = !name || ["#n/a", "null", "none", "nan", "blank", "n/a", "unknown_supplier"].includes(name.toLowerCase());
+
+    if (isInvalidName || !isStrictTrn) {
+      invalidRows.push({
+        row: idx + 1,
+        name: name || "(blank)",
+        trn: trnRaw || "(blank)",
+        reason: isInvalidName ? "Supplier name cannot be blank or unknown" : "TRN must be exactly 15 numeric digits without padding or truncation"
+      });
+      return;
+    }
+
+    cleanedSuppliers.push({
+      name,
+      trn: trnRaw
+    });
   });
+
+  if (cleanedSuppliers.length === 0) {
+    return res.status(400).json({
+      success: false,
+      error: "No valid supplier rows to import. All rows contained missing names or non-15-digit TRNs.",
+      invalid_count: invalidRows.length,
+      invalid_rows: invalidRows
+    });
+  }
 
   try {
     const response = await fetch(`${url}/rest/v1/suppliers`, {
@@ -2283,9 +2355,14 @@ app.post("/api/import/suppliers", supplierImportLimiter, requireOwner, async (re
       return res.status(response.status).json({ success: false, error: errText });
     }
 
+    const insertedData = await response.json().catch(() => []);
+
     res.json({
       success: true,
-      inserted_count: cleanedSuppliers.length
+      inserted_count: Array.isArray(insertedData) ? insertedData.length : cleanedSuppliers.length,
+      invalid_count: invalidRows.length,
+      invalid_rows: invalidRows,
+      data: insertedData
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -2570,6 +2647,7 @@ app.all(["/api/download/source", "/api/download-zip", "/api/download/*", "/api/s
 
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa"

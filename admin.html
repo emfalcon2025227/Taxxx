@@ -4164,8 +4164,8 @@
       localStorage.removeItem("APP_SUPABASE_KEY");
       localStorage.removeItem("APP_SUPABASE_URL");
 
-      // Client fallback analytics respecting custom fiscal quarters, date range, and search
-      const data = simulateAnalytics(filterKey, currentDateFrom, currentDateTo, currentSearch);
+      // Client analytics respecting custom fiscal quarters, date range, and search
+      const data = computeClientAnalytics(filterKey, currentDateFrom, currentDateTo, currentSearch);
       renderDashboard(data);
 
       // Sync ledger if synchronized period mode is active
@@ -4625,9 +4625,9 @@
             showToast(res ? res.error : "Failed to generate report", "error");
           }
         } else {
-          // Client Fallback Excel generation respecting active filters and strict column ordering:
+          // Client Excel generation respecting active filters and strict column ordering:
           // Seq | Date | Invoice No | Party Name | TRN | Amount With Tax | VAT 5% | Amount Before Tax
-          const currentData = activeAnalyticsData || simulateAnalytics(currentFilter, currentDateFrom, currentDateTo, currentSearch);
+          const currentData = activeAnalyticsData || computeClientAnalytics(currentFilter, currentDateFrom, currentDateTo, currentSearch);
           const rows = [
             ["Seq", "Date", "Invoice No", "Party Name", "TRN", "Amount With Tax", "VAT 5%", "Amount Before Tax"]
           ];
@@ -5154,26 +5154,46 @@
           if (!row || row.every(c => !c || c.trim() === "")) continue;
 
           const rowNum = i + 1;
-          let party = partyIdx < row.length ? row[partyIdx].trim() : "";
-          if (!party || ["#n/a", "null", "none", "nan", "blank", "n/a"].includes(party.toLowerCase())) {
-            party = "UNKNOWN_SUPPLIER";
+          const rawParty = partyIdx < row.length ? String(row[partyIdx] || "").trim() : "";
+          const rawTrn = trnIdx < row.length ? String(row[trnIdx] || "").trim() : "";
+
+          const isInvalidName = !rawParty || ["#n/a", "null", "none", "nan", "blank", "n/a", "unknown_supplier"].includes(rawParty.toLowerCase());
+          const isValidTrn = /^[0-9]{15}$/.test(rawTrn);
+
+          if (isInvalidName || !isValidTrn) {
+            const reason = isInvalidName && !isValidTrn 
+              ? "Missing Name & Invalid TRN (Must be 15 digits)" 
+              : (isInvalidName ? "Missing / Invalid Name" : `Invalid TRN (${rawTrn.length} digits, must be exactly 15 numeric digits)`);
+            pendingCsvErrors.push({ rowNum, name: rawParty || "(blank)", trn: rawTrn || "(blank)", reason });
+
+            const tr = document.createElement("tr");
+            tr.className = "bg-rose-50/60 hover:bg-rose-100/60 text-rose-900";
+            tr.innerHTML = `
+              <td class="py-1.5 px-3 font-semibold text-rose-700">${rowNum}</td>
+              <td class="py-1.5 px-3 font-medium text-rose-800">${escapeHtml(rawParty || "(blank)")}</td>
+              <td class="py-1.5 px-3 font-mono text-rose-700">${escapeHtml(rawTrn || "(blank)")}</td>
+              <td class="py-1.5 px-3 text-center">
+                <span class="px-1.5 py-0.5 rounded text-[9px] font-extrabold bg-rose-200 text-rose-900" title="${reason}">
+                  INVALID: ${reason}
+                </span>
+              </td>
+            `;
+            tbody.appendChild(tr);
+            continue;
           }
 
-          const rawTrn = trnIdx < row.length ? row[trnIdx] : "";
-          const { trn: cleanTrn } = cleanTrnStr(rawTrn);
-
           validCount++;
-          pendingCsvRows.push({ name: party, trn: cleanTrn, rowNum });
+          pendingCsvRows.push({ name: rawParty, trn: rawTrn, rowNum });
 
           const tr = document.createElement("tr");
           tr.className = "hover:bg-slate-50";
           tr.innerHTML = `
             <td class="py-1.5 px-3 text-slate-500">${rowNum}</td>
-            <td class="py-1.5 px-3 font-bold">${party}</td>
-            <td class="py-1.5 px-3 font-mono text-slate-800">${cleanTrn}</td>
+            <td class="py-1.5 px-3 font-bold">${escapeHtml(rawParty)}</td>
+            <td class="py-1.5 px-3 font-mono text-slate-800">${escapeHtml(rawTrn)}</td>
             <td class="py-1.5 px-3 text-center">
               <span class="px-1.5 py-0.5 rounded text-[9px] font-extrabold bg-emerald-100 text-emerald-800">
-                READY / AUTO-CORRECTED
+                VALID (15-DIGIT TRN)
               </span>
             </td>
           `;
@@ -5477,7 +5497,10 @@
           try {
             const srvRes = await fetch("/api/import/suppliers", {
               method: "POST",
-              headers: { "Content-Type": "application/json" },
+              headers: { 
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${getAuthToken()}`
+              },
               body: JSON.stringify({ rows: validRecords })
             });
             if (srvRes.ok) {
@@ -5547,7 +5570,10 @@
           try {
             const srvRes = await fetch("/api/import/transactions", {
               method: "POST",
-              headers: { "Content-Type": "application/json" },
+              headers: { 
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${getAuthToken()}`
+              },
               body: JSON.stringify({ rows: validRecords, forced_type: forcedType, raw_csv: rawCsvText })
             });
             if (srvRes.ok) {
@@ -5650,8 +5676,8 @@
       console.warn("Error loading custom suppliers:", e);
     }
 
-    // Analytics simulation for browser preview respecting custom fiscal quarters, dates, and search
-    function simulateAnalytics(filterKey, dateFrom = null, dateTo = null, search = null) {
+    // Client-side analytics processor respecting custom fiscal quarters, dates, and search
+    function computeClientAnalytics(filterKey, dateFrom = null, dateTo = null, search = null) {
       let baseList = (typeof allLedgerTransactions !== "undefined" && Array.isArray(allLedgerTransactions) && allLedgerTransactions.length > 0)
         ? allLedgerTransactions
         : [];
