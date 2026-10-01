@@ -7965,11 +7965,11 @@
       const printWindow = window.open("", "_blank");
       if (!printWindow) return;
 
-      printWindow.document.write(\`
+      printWindow.document.write(`
         <!DOCTYPE html>
         <html>
         <head>
-          <title>\${title}</title>
+          <title>${title}</title>
           <style>
             @page { size: A4 landscape; margin: 12mm; }
             body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #0f172a; margin: 0; padding: 10px; }
@@ -7983,12 +7983,12 @@
         <body>
           <div class="header">
             <div>
-              <h1 class="title">\${title}</h1>
-              <div class="meta">Date Range: \${dateFrom} to \${dateTo} | Records: \${records.length}</div>
+              <h1 class="title">${title}</h1>
+              <div class="meta">Date Range: ${dateFrom} to ${dateTo} | Records: ${records.length}</div>
             </div>
             <div style="text-align: right; font-size: 10px; color: #64748b;">
               UAE Tax & Accounting System<br>
-              Generated: \${new Date().toISOString().slice(0, 10)}
+              Generated: ${new Date().toISOString().slice(0, 10)}
             </div>
           </div>
 
@@ -8008,11 +8008,11 @@
               </tr>
             </thead>
             <tbody>
-              \${rowsHtml}
+              ${rowsHtml}
             </tbody>
           </table>
 
-          \${summaryHtml}
+          ${summaryHtml}
 
           <div style="margin-top: 20px; text-align: center; font-size: 10px; color: #94a3b8; border-top: 1px solid #e2e8f0; padding-top: 8px;">
             Developed by Eng. Mahmoud Mohamed | mahmoud.m@sdi.ae
@@ -8020,10 +8020,10 @@
 
           <script>
             window.onload = function() { window.print(); };
-          </script>
+          <\/script>
         </body>
         </html>
-      \`);
+      `);
       printWindow.document.close();
     }
 
